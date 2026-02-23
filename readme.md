@@ -4,6 +4,7 @@
 > No fluff. No "just use LangChain bro."
 > Pure math, pure pipeline, pure understanding.
 <img width="1919" height="1020" alt="image" src="https://github.com/user-attachments/assets/c69b9318-f91a-4f6f-b9aa-8f73afc8d4d1" />
+RAW OCR OUTPUT:=
 <img width="1919" height="987" alt="Screenshot 2026-02-24 013725" src="https://github.com/user-attachments/assets/d33a850e-249c-4f67-aedd-9060e2358b8c" />
 
 
