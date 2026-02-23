@@ -3,7 +3,7 @@
 > **Retrieval-Augmented Generation** explained from first principles.
 > No fluff. No "just use LangChain bro."
 > Pure math, pure pipeline, pure understanding.
-<img width="1919" height="987" alt="image" src="https://github.com/user-attachments/assets/4af424dd-3115-4489-bc3f-6e75306c6822" />
+<img width="1919" height="1020" alt="image" src="https://github.com/user-attachments/assets/c69b9318-f91a-4f6f-b9aa-8f73afc8d4d1" />
 
 ---
 
@@ -32,7 +32,8 @@ Every arrow is math. Let's walk through each one.
 | Embeddings     | SentenceTransformers / OpenAI / HF    |                                |
 | Vector DB      | FAISS or Chroma                       |                                |
 | Reranking      | cross-encoder/ms-marco-MiniLM-L-12-v2 |                                |
-| LLM            | OpenAI / Ollama / HuggingFace         |                                |
+| LLM (local)    | **Ollama** — Mistral / LLaMA 3        | Runs fully offline, no API key |
+| LLM (cloud)    | OpenAI / HuggingFace                  | Optional alternative           |
 | Framework      | LangChain (optional)                  |                                |
 | Env Mgmt       | venv / pip                            |                                |
 
@@ -666,19 +667,25 @@ Fast ⚡ — no OCR, no re-embedding the corpus.
 import faiss
 import pickle
 import numpy as np
+import requests
+import json
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
-# Load once at application startup
-bi_encoder  = SentenceTransformer("all-MiniLM-L6-v2")
+# ── Load everything once at startup ──────────────────────────────────
+bi_encoder    = SentenceTransformer("all-MiniLM-L6-v2")
 cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-12-v2")
 
-index  = faiss.read_index("vector_index.faiss")
+index = faiss.read_index("vector_index.faiss")
 with open("chunks.pkl", "rb") as f:
     chunks = pickle.load(f)
 
+# ── Ollama config ─────────────────────────────────────────────────────
+OLLAMA_URL   = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "mistral"          # swap to "llama3" or any model you have pulled
+
 
 def retrieve(question: str, top_k: int = 20) -> list[str]:
-    """Dense retrieval: embed query, search FAISS index."""
+    """Dense retrieval: embed query → search FAISS index."""
     q_vec = bi_encoder.encode([question], convert_to_numpy=True)
     faiss.normalize_L2(q_vec)
     _, indices = index.search(q_vec, top_k)
@@ -686,7 +693,7 @@ def retrieve(question: str, top_k: int = 20) -> list[str]:
 
 
 def rerank(question: str, candidates: list[str], top_n: int = 3) -> list[str]:
-    """Cross-encoder reranking for precision."""
+    """Cross-encoder reranking: scores each candidate against the question."""
     pairs  = [[question, c] for c in candidates]
     scores = cross_encoder.predict(pairs)
     ranked = sorted(zip(scores, candidates), reverse=True)
@@ -694,26 +701,135 @@ def rerank(question: str, candidates: list[str], top_n: int = 3) -> list[str]:
 
 
 def build_prompt(question: str, context_chunks: list[str]) -> str:
+    """Assemble the RAG prompt: context first, then question."""
     context = "\n\n---\n\n".join(context_chunks)
     return (
-        f"Use only the context below to answer the question.\n\n"
+        f"You are a helpful assistant. "
+        f"Use ONLY the context below to answer the question. "
+        f"If the answer is not in the context, say 'I don't know based on the provided documents.'\n\n"
         f"Context:\n{context}\n\n"
         f"Question: {question}\n"
         f"Answer:"
     )
 
 
-def answer(question: str) -> str:
-    candidates     = retrieve(question, top_k=20)   # fast, broad
-    best_chunks    = rerank(question, candidates, top_n=3)  # precise
-    prompt         = build_prompt(question, best_chunks)
-    # Pass prompt to any LLM: OpenAI, Ollama, HuggingFace, etc.
-    return prompt
+def ask_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
+    """
+    Send the prompt to a locally running Ollama instance.
+    Ollama streams tokens by default — we collect them all and return
+    the complete answer as a single string.
+    """
+    payload  = {"model": model, "prompt": prompt, "stream": True}
+    response = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=120)
+    response.raise_for_status()
+
+    full_answer = []
+    for line in response.iter_lines():
+        if line:
+            token_data = json.loads(line)
+            full_answer.append(token_data.get("response", ""))
+            if token_data.get("done"):
+                break
+
+    return "".join(full_answer).strip()
 
 
-# Example
-print(answer("When does rice grow in Assam?"))
+def answer(
+    question: str,
+    show_context: bool = False,   # set True to inspect retrieved chunks
+) -> str:
+    """
+    Full RAG pipeline:
+      1. Retrieve top-20 candidates from FAISS
+      2. Rerank → keep top-3
+      3. Build prompt
+      4. Send to Ollama (Mistral / LLaMA 3)
+      5. Return clean answer
+    """
+    candidates  = retrieve(question, top_k=20)
+    best_chunks = rerank(question, candidates, top_n=3)
+    prompt      = build_prompt(question, best_chunks)
+
+    if show_context:
+        print("\n── Retrieved context ──────────────────────────────")
+        for i, chunk in enumerate(best_chunks, 1):
+            print(f"\n[Chunk {i}]\n{chunk}")
+        print("\n── Sending to Ollama ───────────────────────────────\n")
+
+    return ask_ollama(prompt)
+
+
+# ── Example usage ─────────────────────────────────────────────────────
+if __name__ == "__main__":
+    question = "When does rice grow in Assam?"
+
+    print(f"Question: {question}\n")
+    result = answer(question, show_context=True)   # flip to False for clean output only
+    print(f"\nAnswer:\n{result}")
 ```
+
+---
+
+### 🦙 Ollama — Running LLMs Locally
+
+This project uses **Ollama** to run the LLM fully offline.
+No API key. No cloud. No cost per token.
+
+```
+Prompt  →  Ollama (local)  →  Mistral / LLaMA 3  →  Answer
+```
+
+**What Ollama does in this pipeline:**
+
+| Step | What happens |
+|------|-------------|
+| ✅ Uses your existing FAISS pipeline | Retrieval is unchanged |
+| ✅ Retrieves context via FAISS + reranker | Best 3 chunks selected |
+| ✅ Builds the RAG prompt | Context + question concatenated |
+| ✅ Sends prompt to Ollama | Via `http://localhost:11434/api/generate` |
+| ✅ Streams tokens, returns clean answer | Full response assembled |
+| ✅ Optional context inspection | Set `show_context=True` to debug |
+
+**Setup (one time):**
+
+```bash
+# 1. Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 2. Pull a model (pick one)
+ollama pull mistral       # recommended — fast, accurate, 4GB
+ollama pull llama3        # stronger, 8GB
+ollama pull phi3          # lightweight, 2GB — good for low-RAM machines
+
+# 3. Ollama runs as a background service automatically
+# Confirm it is alive:
+curl http://localhost:11434
+```
+
+**Switching models** — change one line in `query.py`:
+
+```python
+OLLAMA_MODEL = "mistral"    # default
+OLLAMA_MODEL = "llama3"     # stronger
+OLLAMA_MODEL = "phi3"       # smaller / faster
+```
+
+**How `ask_ollama()` works:**
+
+Ollama streams responses token by token over HTTP.
+The function collects every token and joins them into a single clean string:
+
+```
+HTTP POST /api/generate
+    → stream of {"response": "Rice", "done": false}
+    → stream of {"response": " grows", "done": false}
+    → ...
+    → {"response": ".", "done": true}
+    → join all → "Rice grows in Assam during monsoon."
+```
+
+This is why `stream=True` is set on the requests call —
+it is faster than waiting for the whole response at once.
 
 ---
 
@@ -775,10 +891,15 @@ OCR — however slow — runs **exactly once** and is never seen again.
 │  Cross-Encoder Rerank → Top-3 chunks (~50ms)   ← optional       │
 │     │                                                            │
 │     ▼                                                            │
-│  Prompt = Question ⊕ Top-3 chunks                               │
+│  build_prompt()  =  Question ⊕ Top-3 chunks                     │
 │     │                                                            │
 │     ▼                                                            │
-│  LLM → Answer                                                   │
+│  ask_ollama()  →  Ollama (localhost:11434)                       │
+│                      │                                           │
+│              Mistral / LLaMA 3 / Phi-3                          │
+│                      │                                           │
+│                      ▼                                           │
+│                   Answer ✅                                      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
