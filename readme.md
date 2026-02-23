@@ -3,6 +3,7 @@
 > **Retrieval-Augmented Generation** explained from first principles.
 > No fluff. No "just use LangChain bro."
 > Pure math, pure pipeline, pure understanding.
+<img width="1919" height="987" alt="image" src="https://github.com/user-attachments/assets/4af424dd-3115-4489-bc3f-6e75306c6822" />
 
 ---
 
